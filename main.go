@@ -4,12 +4,22 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
+	"sync"
 
 	"github.com/alieNoori/crawler/extractor"
 )
+
+type config struct {
+	pages              map[string]*extractor.PageData
+	baseURL            *url.URL
+	mu                 *sync.Mutex
+	concurrencyControl chan struct{}
+	wg                 *sync.WaitGroup
+}
 
 func main() {
 	args := os.Args[1:]
@@ -24,9 +34,78 @@ func main() {
 
 	fmt.Printf("starting crawl\n-%s\n", args[0])
 
-	pages := map[string]int{}
+	rawURL := args[0]
 
-	crawlPage(args[0], args[0], pages)
+	baseURL, err := url.Parse(rawURL)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	cfg := config{
+		pages:              map[string]*extractor.PageData{},
+		baseURL:            baseURL,
+		mu:                 &sync.Mutex{},
+		concurrencyControl: make(chan struct{}, 20),
+		wg:                 &sync.WaitGroup{},
+	}
+
+	cfg.wg.Add(1)
+	cfg.crawlPage(rawURL)
+
+	cfg.wg.Wait()
+
+	for url, pageData := range cfg.pages {
+		fmt.Printf("%s: %+v\n", url, pageData)
+	}
+}
+
+func (cfg *config) crawlPage(rawCurrentURL string) {
+	cfg.concurrencyControl <- struct{}{}
+	defer cfg.wg.Done()
+
+	defer func() {
+		<-cfg.concurrencyControl
+	}()
+
+	if !extractor.HasBaseURL(rawCurrentURL, cfg.baseURL) {
+		return
+	}
+
+	normalizedURL, err := extractor.NormalizeURL(rawCurrentURL)
+	if err != nil {
+		return
+	}
+
+	cfg.mu.Lock()
+	if _, ok := cfg.pages[normalizedURL]; ok {
+		cfg.mu.Unlock()
+		return
+	}
+	cfg.pages[normalizedURL] = nil
+	cfg.mu.Unlock()
+
+	htmlBody, err := getHTML(rawCurrentURL)
+	if err != nil {
+		return
+	}
+
+	pageData, err := extractor.ExtractPageData(htmlBody, cfg.baseURL.String())
+	if err != nil {
+		return
+	}
+
+	cfg.mu.Lock()
+	cfg.pages[normalizedURL] = pageData
+	cfg.mu.Unlock()
+
+	if len(pageData.OutgoingLinks) <= 0 {
+		return
+	}
+
+	for _, url := range pageData.OutgoingLinks {
+		cfg.wg.Add(1)
+		go cfg.crawlPage(url)
+	}
 }
 
 func getHTML(rawURL string) (string, error) {
@@ -58,51 +137,4 @@ func getHTML(rawURL string) (string, error) {
 	}
 
 	return string(body), nil
-}
-
-func crawlPage(rawBaseURL, rawCurrentURL string, pages map[string]int) {
-	baseURL, err := url.Parse(rawBaseURL)
-	if err != nil {
-		return
-	}
-
-	if !extractor.HasBaseURL(rawCurrentURL, baseURL) {
-		return
-	}
-
-	normalizedURL, err := extractor.NormalizeURL(rawCurrentURL)
-	if err != nil {
-		return
-	}
-
-	if _, ok := pages[normalizedURL]; ok {
-		pages[normalizedURL]++
-		return
-	} else {
-		pages[normalizedURL] = 1
-	}
-
-	htmlBody, err := getHTML(rawCurrentURL)
-	if err != nil {
-		return
-	}
-
-	pageData, err := extractor.ExtractPageData(htmlBody, rawBaseURL)
-	if err != nil {
-		return
-	}
-
-	if len(pageData.OutgoingLinks) <= 0 {
-		return
-	}
-
-	fmt.Println("====================================")
-	fmt.Println(rawCurrentURL)
-	fmt.Println("------------------------------------")
-	fmt.Printf("%+v\n", pageData)
-	fmt.Println("====================================")
-
-	for _, url := range pageData.OutgoingLinks {
-		crawlPage(rawBaseURL, url, pages)
-	}
 }
