@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"sync"
 
 	"github.com/alieNoori/crawler/extractor"
@@ -19,6 +20,7 @@ type config struct {
 	mu                 *sync.Mutex
 	concurrencyControl chan struct{}
 	wg                 *sync.WaitGroup
+	maxPages           int
 }
 
 func main() {
@@ -27,7 +29,7 @@ func main() {
 	if len(args) < 1 {
 		fmt.Print("no website provided\n")
 		os.Exit(1)
-	} else if len(args) > 1 {
+	} else if len(args) > 3 {
 		fmt.Print("too many arguments provided\n")
 		os.Exit(1)
 	}
@@ -35,6 +37,14 @@ func main() {
 	fmt.Printf("starting crawl\n-%s\n", args[0])
 
 	rawURL := args[0]
+	maxConcurrency, err := strconv.Atoi(args[1])
+	if err != nil {
+		log.Fatalln(err)
+	}
+	maxPages, err := strconv.Atoi(args[2])
+	if err != nil {
+		log.Fatalln(err)
+	}
 
 	baseURL, err := url.Parse(rawURL)
 	if err != nil {
@@ -45,18 +55,14 @@ func main() {
 		pages:              map[string]*extractor.PageData{},
 		baseURL:            baseURL,
 		mu:                 &sync.Mutex{},
-		concurrencyControl: make(chan struct{}, 20),
+		concurrencyControl: make(chan struct{}, maxConcurrency),
 		wg:                 &sync.WaitGroup{},
+		maxPages:           maxPages,
 	}
 
 	cfg.wg.Add(1)
 	cfg.crawlPage(rawURL)
-
 	cfg.wg.Wait()
-
-	for url, pageData := range cfg.pages {
-		fmt.Printf("%s: %+v\n", url, pageData)
-	}
 }
 
 func (cfg *config) crawlPage(rawCurrentURL string) {
@@ -66,6 +72,10 @@ func (cfg *config) crawlPage(rawCurrentURL string) {
 	defer func() {
 		<-cfg.concurrencyControl
 	}()
+
+	if len(cfg.pages) >= cfg.maxPages {
+		return
+	}
 
 	if !extractor.HasBaseURL(rawCurrentURL, cfg.baseURL) {
 		return
