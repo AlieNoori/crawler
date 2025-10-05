@@ -63,6 +63,8 @@ func main() {
 	cfg.wg.Add(1)
 	cfg.crawlPage(rawURL)
 	cfg.wg.Wait()
+
+	err = writeCSVReport(cfg.pages, "report.csv")
 }
 
 func (cfg *config) crawlPage(rawCurrentURL string) {
